@@ -10,6 +10,7 @@ using System.Linq;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
+using System.Threading.Tasks;
 
 namespace NRulesTest
 {
@@ -40,16 +41,28 @@ namespace NRulesTest
 
             Random rnd = new Random();
 
+            List<Task> tasks = new List<Task>();
+
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
-            for (int i = 0; i < 100000; i++)
-            {
-                var x = new Is<int>(rnd.Next());
-                var y = new Is<int>(rnd.Next());
 
-                var result = Actions<int>.Add(x, y);
-                //Console.WriteLine(result.Value);
-            }
+            for (int p = 0; p < Environment.ProcessorCount; p++)
+                tasks.Add(Task.Run(() =>
+                {
+                    var actions = new Actions<int>();
+
+                    for (int i = 0; i < 100000; i++)
+                    {
+                        var x = new Is<int>(rnd.Next());
+                        var y = new Is<int>(rnd.Next());
+
+                        var result = actions.Add(x, y);
+                        //Console.WriteLine(result.Value);
+                    }
+                }));
+
+            Task.WaitAll(tasks.ToArray());
+
             stopwatch.Stop();
             Console.WriteLine(stopwatch.Elapsed);
         }
@@ -160,31 +173,32 @@ namespace NRulesTest
     //}
 
     //Standard actions for any given data type
-    public static class Actions<T>
+    public class Actions<T>
     {
-        static RuleRepository repository;
-        static Dictionary<string, Lazy<ISession>> sessions;
+        RuleRepository repository { get; set; }
 
-        static Actions()
+        Dictionary<string, Lazy<ISessionFactory>> sessions { get; set; }
+
+        public Actions()
         {
             repository = new RuleRepository();
-            sessions = new Dictionary<string, Lazy<ISession>>();
+            sessions = new Dictionary<string, Lazy<ISessionFactory>>();
 
             var rc = new RuleCompiler();
 
-            var addFactory = new Lazy<ISession>(() =>
+            var addFactory = new Lazy<ISessionFactory>(() =>
             {
                 repository.Load(x => x.To("add").From(typeof(AddRule<T>)));
                 var addRuleset = repository.GetRuleSets().Single(r => r.Name == "add");
-                return rc.Compile(addRuleset.Rules)/*.Log()*/.CreateSession();
+                return rc.Compile(addRuleset.Rules)/*.Log()*/;
             });
 
             sessions.Add("add", addFactory);
         }
 
-        public static Is<T> Add(Is<T> value1, Is<T> value2)
+        public Is<T> Add(Is<T> value1, Is<T> value2)
         {
-            var session = sessions["add"].Value;
+            var session = sessions["add"].Value.CreateSession();
             var payload = new AddPayload<T>(value1, value2);
             try
             {
@@ -204,6 +218,8 @@ namespace NRulesTest
         public Is<T> Value1 { get; }
         public Is<T> Value2 { get; }
 
+        public Is<T> Result { get; set; }
+
         public AddPayload(Is<T> value1, Is<T> value2)
         {
             Value1 = value1;
@@ -221,12 +237,12 @@ namespace NRulesTest
                 .Match<AddPayload<T>>(() => payload);
 
             Then()
-                .Yield(ctx => new Is<T>(Add(payload.Value1, payload.Value2)));
+                .Yield(ctx => Add(payload.Value1, payload.Value2));
         }
 
-        public virtual T Add(Is<T> v1, Is<T> v2)
+        public virtual Is<T> Add(Is<T> v1, Is<T> v2)
         {
-            return (T)(dynamic)v1.Value + (dynamic)v2.Value;
+            return new Is<T>((T)(dynamic)v1.Value + (dynamic)v2.Value);
         }
     }
 
